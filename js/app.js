@@ -10,7 +10,8 @@
     get(k, d) { try { const v = localStorage.getItem("yeliao:" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem("yeliao:" + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
   };
-  const settings = Object.assign({ pinyin: true, ja: false, rate: 0.85, mode: "challenge" }, store.get("settings", {}));
+  const settings = Object.assign({ pinyin: true, ja: false, rate: 1, mode: "challenge" }, store.get("settings", {}));
+  if (!store.get("rateV2", false)) { settings.rate = 1; store.set("rateV2", true); }
   const done = store.get("done", {});          // sceneId -> times finished
   const stars = store.get("stars", {});        // zh -> [zh, py, ja, note]
   const saveSettings = () => store.set("settings", settings);
@@ -71,14 +72,37 @@
     el.innerHTML = msg; el.hidden = false;
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 6000);
   }
-  const NO_VOICE_MSG = '中国語の音声が見つからないため読み上げできません。<a href="#prefs">設定</a>に追加のしかたがあります。';
+  const NO_VOICE_MSG = 'AIの返事を読み上げる中国語の音声がこの端末にありません。<a href="#prefs">設定</a>に追加のしかたがあります。';
+
+  // Recorded audio for every scripted line (natural Mandarin voice, same on every device)
+  const AUDIO = window.AUDIO || {};
+  const player = new Audio();
+  player.preload = "auto";
+  function stopAll() {
+    try { player.pause(); } catch (e) { /* nothing playing */ }
+    if (claudeTts) try { claudeTts.stop(); } catch (e) { /* idle */ }
+    if ("speechSynthesis" in window) try { speechSynthesis.cancel(); } catch (e) { /* idle */ }
+  }
 
   function speak(text, rate) {
     if (!text) return;
-    const r = rate || settings.rate;
+    const r = rate || settings.rate;   // 1 = natural speed
+    stopAll();
+    if (AUDIO[text]) {
+      player.src = AUDIO[text];
+      player.playbackRate = r;
+      if ("preservesPitch" in player) player.preservesPitch = true;
+      player.play().catch(() => speakLive(text, r));
+      return;
+    }
+    speakLive(text, r);
+  }
+
+  // For sentences without a recording (AI replies): Claude's voice or a device Chinese voice
+  function speakLive(text, r) {
     if (claudeTts) {
       claudeTts.speak(cleanForSpeech(text), { language: "zh", rate: Math.min(1.5, Math.max(0.7, r)) })
-        .catch((e) => { if (e && (e.code === "not_granted" || e.code === "unavailable")) { claudeTts = null; speak(text, rate); } });
+        .catch((e) => { if (e && (e.code === "not_granted" || e.code === "unavailable")) { claudeTts = null; speakLive(text, r); } });
       return;
     }
     if (!("speechSynthesis" in window)) { toast(NO_VOICE_MSG); return; }
@@ -86,11 +110,10 @@
     const listLoaded = (speechSynthesis.getVoices() || []).length > 0;
     if (!voice && listLoaded) { toast(NO_VOICE_MSG); return; }
     try {
-      speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(cleanForSpeech(text));
       u.lang = "zh-CN";
       if (voice) u.voice = voice;
-      u.rate = r;
+      u.rate = r * 0.85;
       speechSynthesis.speak(u);
     } catch (e) { toast(NO_VOICE_MSG); }
   }
@@ -629,11 +652,12 @@
         <div class="pref"><span>相手のセリフの訳を表示</span><span class="d">オフでも、吹き出しの「訳」でいつでも見られます。</span>
           <button class="c switch" role="switch" id="sw-ja" aria-checked="${settings.ja}" aria-label="訳を表示"></button></div>
         <div class="pref"><span>読み上げの速さ</span><span class="d" id="rate-val">${settings.rate.toFixed(2)} 倍</span>
-          <span class="c row"><input type="range" id="rate" min="0.5" max="1.2" step="0.05" value="${settings.rate}" aria-label="読み上げの速さ"><button class="icon-btn" data-play="今天真的很开心，下次我们再约！" aria-label="試しに聞く">${icon.play}</button></span></div>
+          <span class="c row"><input type="range" id="rate" min="0.6" max="1.3" step="0.05" value="${settings.rate}" aria-label="読み上げの速さ"><button class="icon-btn" data-play="今天真的很开心，下次我们再约！" aria-label="試しに聞く">${icon.play}</button></span></div>
       </div>
       <div class="about">
-        <div><b>読み上げ：</b>${voiceName() ? `中国語の音声（${esc(voiceName())}）で読み上げます。` : "この端末には中国語の音声が入っていないため、読み上げできません。"}</div>
-        ${claudeTts ? "" : `<div>中国語の音声を追加するには：<br>・iPhone：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 中国語（中国大陸）を選んでダウンロード<br>・Android：設定 → システム → 言語と入力 → 音声出力（テキスト読み上げ）→ Google音声サービスの設定で「中国語（普通话）」の音声データをインストール<br>・パソコン：Chromeで開くと中国語の音声が最初から入っています。<br>追加したらこのページを開き直してください。</div>`}
+        <div><b>読み上げ：</b>場面とフレーズ帳のセリフは、録音済みの中国語（普通话）の音声で再生します。どの端末でも同じ声です。</div>
+        <div><b>AIの返事の読み上げ：</b>${voiceName() ? `中国語の音声（${esc(voiceName())}）で読み上げます。` : "この端末には中国語の音声が入っていないため、AIの返事は読み上げできません（文字では表示されます）。"}</div>
+        ${claudeTts || zhVoice ? "" : `<div>AIの返事も読み上げたい場合、中国語の音声を追加するには：<br>・iPhone：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 中国語（中国大陸）を選んでダウンロード<br>・Android：設定 → システム → 言語と入力 → 音声出力（テキスト読み上げ）→ Google音声サービスの設定で「中国語（普通话）」の音声データをインストール<br>・パソコン：Chromeで開くと中国語の音声が最初から入っています。<br>追加したらこのページを開き直してください。</div>`}
         <div>マイク：${Mic.available() && !Mic.dictFailed ? "使えます。初回はマイクの許可を求められます。" : "この端末・ブラウザでは使えません（声に出して練習し、「答えを見る」で確認できます）。"}</div>
         <div>練習の記録と保存したフレーズは、この端末のブラウザに保存されます。</div>
         <button class="btn ghost" id="reset-progress" style="justify-self:start">クリア回数をリセット</button>
