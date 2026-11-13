@@ -188,7 +188,31 @@
   const player = new Audio();
   player.preload = "auto";
   let playToken = 0;
+  // Recordings are packed into a few files (one per scene, a few for words):
+  // AUDIO[zh] = [file, byteOffset, byteLength]. A file is fetched once and sliced per sentence.
   const hasAudio = (zh) => !!AUDIO[zh];
+  const bundles = new Map();   // name -> ArrayBuffer (loaded)
+  const loading = new Map();   // name -> Promise<ArrayBuffer>
+  const urls = new Map();      // zh -> object URL
+  function loadBundle(name) {
+    if (bundles.has(name)) return Promise.resolve(bundles.get(name));
+    if (!loading.has(name)) {
+      loading.set(name, fetch("audio/" + name + ".mp3").then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+        .then((buf) => { bundles.set(name, buf); loading.delete(name); return buf; })
+        .catch((e) => { loading.delete(name); throw e; }));
+    }
+    return loading.get(name);
+  }
+  function prefetch(zhs) { new Set(zhs.filter(hasAudio).map((zh) => AUDIO[zh][0])).forEach((n) => loadBundle(n).catch(() => {})); }
+  function urlNow(zh) { // synchronous when the file is already loaded (keeps iOS happy)
+    if (urls.has(zh)) return urls.get(zh);
+    const [name, off, len] = AUDIO[zh];
+    const buf = bundles.get(name);
+    if (!buf) return null;
+    const u = URL.createObjectURL(new Blob([buf.slice(off, off + len)], { type: "audio/mpeg" }));
+    urls.set(zh, u);
+    return u;
+  }
   function stopAudio() {
     playToken++;
     try { player.pause(); } catch (e) { /* idle */ }
@@ -201,17 +225,19 @@
     const token = playToken;
     const r = rate || settings.rate;
     if (!zh) return Promise.resolve();
-    if (AUDIO[zh]) {
-      return new Promise((res) => {
-        player.src = AUDIO[zh];
-        player.playbackRate = r;
-        if ("preservesPitch" in player) player.preservesPitch = true;
-        player.onended = () => res(true);
-        player.onerror = () => res(false);
-        player.play().catch(() => { if (token === playToken) speakLive(zh, r).then(res); else res(false); });
-      });
-    }
-    return speakLive(zh, r);
+    if (!AUDIO[zh]) return speakLive(zh, r);
+    const start = (src) => new Promise((res) => {
+      if (token !== playToken) return res(false);
+      player.src = src;
+      player.playbackRate = r;
+      if ("preservesPitch" in player) player.preservesPitch = true;
+      player.onended = () => res(true);
+      player.onerror = () => res(false);
+      player.play().catch(() => res(false));
+    });
+    const now1 = urlNow(zh);
+    if (now1) return start(now1);
+    return loadBundle(AUDIO[zh][0]).then(() => start(urlNow(zh)), () => { toast("音声を読み込めませんでした。通信状態を確かめて、もう一度タップしてください。"); return false; });
   }
   function speakLive(zh, r) {
     const text = String(zh).replace(/[《》“”]/g, "");
@@ -312,6 +338,7 @@
   function wordSheet(w) {
     const wd = WORD_BY.get(w);
     if (!wd) return;
+    prefetch([wordAudioKey(wd.w)].concat((wd.ex || []).map((e) => e[0])));
     const exs = (wd.ex || []).slice(0, 4);
     sheet(`<div class="ws-head"><span class="kind">${esc(kindShort(wd.kind))}${wd.hsk ? ` ・ HSK${wd.hsk}` : ""}</span>
       <div class="ws-w" lang="zh-CN">${esc(wd.w)}</div><div class="ws-py">${esc(wd.py)}</div><div class="ws-ja">${esc(wd.ja)}</div>
@@ -384,6 +411,7 @@
     open(s) {
       this.s = s; this.mode = null; this.run = null; this.i = 0; this.log = []; this.results = [];
       store.set("lastScene", s.id);
+      const L = sceneLines(s); prefetch(L.p.concat(L.r).map((l) => l[0]));
       this.renderIntro();
     },
     header(stepText, frac) {
@@ -637,6 +665,7 @@
         const L = LINE_INDEX.get(val); return L ? { key, kind, line: L.line, scene: L.scene, k: kOf(val) } : null;
       }).filter(Boolean);
       this.i = 0; this.phase = "q"; this.done = []; this.choices = null;
+      prefetch(this.items.map((it) => it.kind === "w" ? wordAudioKey(it.w.w) : it.line[0]));
       this.render();
     },
     render() {
@@ -685,6 +714,7 @@
   const filteredWords = () => WORDS.filter((w) => (wFilter.kind === "all" || w.kind === wFilter.kind) && (wFilter.hsk === "all" || String(w.hsk || "x") === wFilter.hsk));
   const Words = {
     render() {
+      prefetch(WORDS.map((w) => wordAudioKey(w.w)));
       if (!WORDS.length) { view.innerHTML = `<h1 class="page-h">単語</h1><div class="empty">単語・つなぎ言葉のデータは、いま作っている新しい台本と一緒に追加されます。</div>`; return; }
       const list = filteredWords();
       const levels = [...new Set(WORDS.map((w) => String(w.hsk || "x")))].sort();
@@ -714,7 +744,9 @@
       const list = filteredWords();
       const score = (w) => { const st = prog["w:" + w.w]; if (!st) return 1; if (st.due <= now()) return 0; return 2 + st.b; };
       this.items = shuffle(list).sort((a, b) => score(a) - score(b)).slice(0, 10);
-      this.i = 0; this.res = []; this.prepare(); this.render();
+      this.i = 0; this.res = []; this.prepare();
+      prefetch(this.items.flatMap((w) => [wordAudioKey(w.w)].concat((w.ex || []).map((e) => e[0]))));
+      this.render();
     },
     prepare() {
       const w = this.items[this.i]; if (!w) return;
@@ -800,7 +832,7 @@
         ${WORDS.length ? `<h2 class="sec-h">単語（HSKの級ごと）</h2>
         <ul class="stat-rows">${levels.map((h) => { const ws = WORDS.filter((w) => (w.hsk || "x") === h); const t = cnt(ws.map((w) => "w:" + w.w)); return `<li><span class="lbl">${h === "x" ? "その他" : "HSK" + h}</span>${bar(t, ws.length)}<span class="n">${t[2] + t[3]}/${ws.length}</span></li>`; }).join("")}</ul>` : ""}
         <h2 class="sec-h">場面ごとの言えるフレーズ</h2>
-        <ul class="stat-rows">${SCENES.map((s) => { const L = sceneLines(s).r; const t = cnt(L.map((l) => "s:" + l[0])); return `<li><a href="#scene-${s.id}" class="lbl"><span class="mark xs" lang="zh-CN">${esc(s.mark)}</span>${esc(s.title)}</a>${bar(t, L.length)}<span class="n">${t[2] + t[3]}/${L.length}</span></li>`; }).join("")}</ul>
+        <ul class="stat-rows two">${SCENES.map((s) => { const L = sceneLines(s).r; const t = cnt(L.map((l) => "s:" + l[0])); return `<li><a href="#scene-${s.id}" class="lbl"><span class="mark xs" lang="zh-CN">${esc(s.mark)}</span>${esc(s.title)}</a>${bar(t, L.length)}<span class="n">${t[2] + t[3]}/${L.length}</span></li>`; }).join("")}</ul>
         ${hear[0] + hear[1] + hear[2] + hear[3] ? "" : `<p class="small muted">聞き取りの記録は、場面の「聞き取り」で練習すると出てきます。</p>`}`;
     }
   };

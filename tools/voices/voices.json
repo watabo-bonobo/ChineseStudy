@@ -1,0 +1,5 @@
+{
+ "man": {"wav": "man.wav", "text": "周日被我射熄火了，所以今天是周一。", "py": "zhōurì bèi wǒ shè xīhuǒ le, suǒyǐ jīntiān shì zhōuyī.", "note": "ZipVoice 付属の参照音声（男性）"},
+ "k102": {"wav": "k102.wav", "text": "已经很厉害了！以后我们多用中文聊天。您的中文说得真好！学了多久了？", "py": "yǐjīng hěn lìhai le! yǐhòu wǒmen duō yòng Zhōngwén liáotiān. nín de Zhōngwén shuō de zhēn hǎo! xué le duō jiǔ le?", "note": "Kokoro 話者102（男性）の録音"},
+ "k25": {"wav": "k25.wav", "text": "已经很厉害了！以后我们多用中文聊天。您的中文说得真好！学了多久了？", "py": "yǐjīng hěn lìhai le! yǐhòu wǒmen duō yòng Zhōngwén liáotiān. nín de Zhōngwén shuō de zhēn hǎo! xué le duō jiǔ le?", "note": "Kokoro 話者25（女性）の録音"}
+}
