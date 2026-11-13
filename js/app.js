@@ -46,24 +46,53 @@
   let lineRegistry = {};
   const reg = (line) => { lineRegistry[line[0]] = line; return line[0]; };
 
-  /* ---------------- speech output ---------------- */
+  /* ---------------- speech output ----------------
+     Order of preference:
+     1. Claude's own voice, when the page is opened in Claude and it can read Chinese
+     2. a Chinese voice installed on the device (browser speech synthesis)
+     Never fall back to a non-Chinese voice: it reads the characters as Japanese. */
   let zhVoice = null;
-  function loadVoices() {
-    if (!("speechSynthesis" in window)) return;
-    const vs = speechSynthesis.getVoices();
-    zhVoice = vs.find((v) => /zh[-_]CN/i.test(v.lang)) || vs.find((v) => /^zh/i.test(v.lang) && !/HK|TW/i.test(v.lang)) || vs.find((v) => /^zh/i.test(v.lang)) || null;
+  let claudeTts = null;          // Claude voice namespace, only when it can read Chinese
+  function findZhVoice() {
+    if (!("speechSynthesis" in window)) return null;
+    const vs = speechSynthesis.getVoices() || [];
+    const zh = vs.filter((v) => /^(zh|cmn)/i.test(v.lang.replace("_", "-")));
+    zhVoice = zh.find((v) => /CN|Hans/i.test(v.lang)) || zh.find((v) => !/HK|TW|yue/i.test(v.lang)) || zh[0] || null;
+    return zhVoice;
   }
-  if ("speechSynthesis" in window) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
+  if ("speechSynthesis" in window) { findZhVoice(); speechSynthesis.onvoiceschanged = findZhVoice; }
+  const cleanForSpeech = (t) => String(t).replace(/[《》“”]/g, "");
+  const voiceName = () => claudeTts ? "Claudeの音声" : zhVoice ? zhVoice.name : "";
+
+  let toastTimer = null;
+  function toast(msg) {
+    let el = document.getElementById("toast");
+    if (!el) { el = document.createElement("div"); el.id = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+    el.innerHTML = msg; el.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 6000);
+  }
+  const NO_VOICE_MSG = '中国語の音声が見つからないため読み上げできません。<a href="#prefs">設定</a>に追加のしかたがあります。';
+
   function speak(text, rate) {
-    if (!("speechSynthesis" in window) || !text) return;
+    if (!text) return;
+    const r = rate || settings.rate;
+    if (claudeTts) {
+      claudeTts.speak(cleanForSpeech(text), { language: "zh", rate: Math.min(1.5, Math.max(0.7, r)) })
+        .catch((e) => { if (e && (e.code === "not_granted" || e.code === "unavailable")) { claudeTts = null; speak(text, rate); } });
+      return;
+    }
+    if (!("speechSynthesis" in window)) { toast(NO_VOICE_MSG); return; }
+    const voice = zhVoice || findZhVoice();
+    const listLoaded = (speechSynthesis.getVoices() || []).length > 0;
+    if (!voice && listLoaded) { toast(NO_VOICE_MSG); return; }
     try {
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(String(text).replace(/[《》“”]/g, ""));
+      const u = new SpeechSynthesisUtterance(cleanForSpeech(text));
       u.lang = "zh-CN";
-      if (zhVoice) u.voice = zhVoice;
-      u.rate = rate || settings.rate;
+      if (voice) u.voice = voice;
+      u.rate = r;
       speechSynthesis.speak(u);
-    } catch (e) { /* speech not available */ }
+    } catch (e) { toast(NO_VOICE_MSG); }
   }
 
   /* ---------------- speech input ----------------
@@ -603,7 +632,8 @@
           <span class="c row"><input type="range" id="rate" min="0.5" max="1.2" step="0.05" value="${settings.rate}" aria-label="読み上げの速さ"><button class="icon-btn" data-play="今天真的很开心，下次我们再约！" aria-label="試しに聞く">${icon.play}</button></span></div>
       </div>
       <div class="about">
-        <div>音声：${"speechSynthesis" in window ? (zhVoice ? `中国語の音声（${esc(zhVoice.name)}）で読み上げます。` : "中国語の音声が見つかりません。端末の設定で中国語（普通话）の音声を追加すると読み上げられます。") : "この端末は読み上げに対応していません。"}</div>
+        <div><b>読み上げ：</b>${voiceName() ? `中国語の音声（${esc(voiceName())}）で読み上げます。` : "この端末には中国語の音声が入っていないため、読み上げできません。"}</div>
+        ${claudeTts ? "" : `<div>中国語の音声を追加するには：<br>・iPhone：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 中国語（中国大陸）を選んでダウンロード<br>・Android：設定 → システム → 言語と入力 → 音声出力（テキスト読み上げ）→ Google音声サービスの設定で「中国語（普通话）」の音声データをインストール<br>・パソコン：Chromeで開くと中国語の音声が最初から入っています。<br>追加したらこのページを開き直してください。</div>`}
         <div>マイク：${Mic.available() && !Mic.dictFailed ? "使えます。初回はマイクの許可を求められます。" : "この端末・ブラウザでは使えません（声に出して練習し、「答えを見る」で確認できます）。"}</div>
         <div>練習の記録と保存したフレーズは、この端末のブラウザに保存されます。</div>
         <button class="btn ghost" id="reset-progress" style="justify-self:start">クリア回数をリセット</button>
@@ -624,6 +654,15 @@
   if (window.claude && typeof window.claude.use === "function") {
     window.claude.use("sample").then((s) => { AI.sample = s || null; if (location.hash === "#ai") AI.render(); }).catch(() => { AI.sample = null; AI.render(); });
     window.claude.use("dictation").then((d) => { if (d) Mic.attachDictation(d); }).catch(() => {});
+    window.claude.use("tts").then(async (t) => {
+      if (!t) return;
+      const langs = t.languages ? await t.languages().catch(() => undefined) : undefined;
+      // Use Claude's voice only when it says it can read Chinese.
+      if (Array.isArray(langs) && langs.some((l) => /^zh/i.test(l))) {
+        claudeTts = t;
+        if (location.hash === "#prefs") renderPrefs();
+      }
+    }).catch(() => {});
     Mic.SR = null; // inside Claude the frame has no direct microphone access; dictation is used instead
   } else {
     AI.sample = null;
