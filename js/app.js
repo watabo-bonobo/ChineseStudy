@@ -20,7 +20,8 @@
     get(k, d) { try { const v = localStorage.getItem(NS + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
   };
-  const settings = Object.assign({ style: "challenge", pinyin: true, subs: "show", ja: false, rate: 1 }, store.get("settings", {}));
+  const settings = Object.assign({ style: "free", pinyin: true, subs: "show", ja: false, rate: 1 }, store.get("settings", {}));
+  if (!settings.v) { if (settings.style === "challenge") settings.style = "free"; settings.v = 2; } // free answers (AI judged) became the default
   const saveSettings = () => store.set("settings", settings);
 
   /* =============== helpers =============== */
@@ -375,6 +376,12 @@
     const a = e.target.closest("[data-act]");
     if (a && ctrl && ctrl.act) ctrl.act(a.getAttribute("data-act"), a, e);
   });
+  view.addEventListener("submit", (e) => {
+    const f = e.target.closest("[data-free-form]");
+    if (!f) return;
+    e.preventDefault();
+    Scene.judgeFree(f.querySelector("input").value, false);
+  });
   view.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-kw]")) { e.preventDefault(); wordSheet(e.target.getAttribute("data-kw")); } });
   document.addEventListener("click", (e) => { const p = e.target.closest("#sheet [data-play]"); if (p) play(p.getAttribute("data-play")); });
 
@@ -449,8 +456,9 @@
     },
     enterTurn() {
       const t = this.run[this.i];
-      this.phase = this.mode === "listen" ? "hear" : "choose";
+      this.phase = this.mode === "listen" ? "hear" : this.freeOn() ? "free" : "choose";
       this.pickI = null; this.said = ""; this.score = null; this.micMsg = ""; this.answered = null;
+      this.fr = { draft: "", busy: false, res: null, err: "" };
       if (this.mode === "speak") { this.log.push({ who: "p", line: t.p, k: t.k, hide: settings.subs === "after" }); }
       this.render();
       play(t.p[0]).then(() => { // reveal hidden subtitles once heard
@@ -493,8 +501,10 @@
         return `<div class="label">あなたの番：どう返しますか？</div>
           <div class="options">${t.r.map((r, n) => settings.style === "challenge"
             ? `<button class="option" data-act="pick" data-n="${n}">${esc(r[2])}</button>`
-            : `<button class="option" data-act="pick" data-n="${n}"><span class="zh" lang="zh-CN">${esc(r[0])}</span>${settings.pinyin ? `<span class="py">${esc(r[1])}</span>` : ""}<span class="small muted">${esc(r[2])}</span></button>`).join("")}</div>`;
+            : `<button class="option" data-act="pick" data-n="${n}"><span class="zh" lang="zh-CN">${esc(r[0])}</span>${settings.pinyin ? `<span class="py">${esc(r[1])}</span>` : ""}<span class="small muted">${esc(r[2])}</span></button>`).join("")}</div>
+          ${AI.sample ? `<button class="link-btn" data-act="to-free">${I.mic}台本にとらわれず、自由に返す（AIが判定）</button>` : ""}`;
       }
+      if (this.phase === "free") return this.freeHtml(t);
       const r = t.r[this.pickI];
       const heard = `<div class="heard" id="heard">${this.micMsg ? esc(this.micMsg) : this.said ? `聞き取り：<b lang="zh-CN">${esc(this.said)}</b>` : Mic.live ? "聞いています…" : ""}</div>`;
       if (this.phase === "say") {
@@ -527,7 +537,21 @@
       if (a === "toggle") { const b = el.closest(".msg").querySelector(el.getAttribute("data-t") === "py" ? ".py" : ".ja"); if (b) b.hidden = !b.hidden; const n = el.closest(".msg").querySelector(".note"); if (n && el.getAttribute("data-t") === "ja") n.hidden = b.hidden; return; }
       if (a === "pick") { this.pickI = +el.getAttribute("data-n"); this.phase = settings.style === "challenge" ? "say" : "reveal"; if (this.phase === "reveal") play(t.r[this.pickI][0]); return this.render(); }
       if (a === "reveal") { if (Mic.live) Mic.stop(); this.phase = "reveal"; play(t.r[this.pickI][0]); return this.render(); }
-      if (a === "mic") return this.mic();
+      if (a === "to-free") { this.phase = "free"; return this.render(); }
+      if (a === "to-pick") { if (Mic.live) Mic.stop(); this.phase = "choose"; this.fr = { draft: "", busy: false, res: null, err: "" }; return this.render(); }
+      if (a === "fretry") { this.fr = { draft: "", busy: false, res: null, err: "" }; this.said = ""; this.micMsg = ""; return this.render(); }
+      if (a === "fgrade") {
+        if (Mic.live) Mic.stop();
+        const g = +el.getAttribute("data-g"), res = this.fr.res, said = res.said;
+        const line = [said.zh, said.py || "", said.ja || ""];
+        if (res.closest >= 0 && t.r[res.closest] && g > 0) grade("s:" + t.r[res.closest][0], g);
+        this.results.push({ line, g, k: t.k, free: true });
+        this.log.push({ who: "me", line, k: t.k });
+        this.i++;
+        if (this.i < this.run.length) return this.enterTurn();
+        this.phase = "end"; return this.render();
+      }
+      if (a === "mic") return this.phase === "free" ? this.freeMic() : this.mic();
       if (a === "grade") {
         if (Mic.live) Mic.stop();
         const g = +el.getAttribute("data-g"), r = t.r[this.pickI];
@@ -553,6 +577,88 @@
           this.render();
         } else { const h = document.getElementById("heard"); if (h) h.innerHTML = text ? `聞き取り：<b lang="zh-CN">${esc(text)}</b>` : "聞いています…"; }
       });
+      this.render();
+    },
+    /* ----- free answer, judged by Claude (only inside Claude) ----- */
+    freeOn() { return settings.style === "free" && !!AI.sample; },
+    freeHtml(t) {
+      const fr = this.fr;
+      const ideas = `<details class="ideas"><summary>言いたいことの例</summary><ul>${t.r.map((r) => `<li>${esc(r[2])}</li>`).join("")}</ul></details>`;
+      if (fr.busy) return `<div class="label">あなたの返し</div><div class="you-said zh" lang="zh-CN">${esc(fr.text)}</div><div class="judging" role="status"><span class="dots" aria-hidden="true"></span>流れに合っているか見ています…</div>`;
+      if (!fr.res) {
+        const heard = `<div class="heard" id="heard">${this.micMsg ? esc(this.micMsg) : this.said ? `聞き取り：<b lang="zh-CN">${esc(this.said)}</b>` : Mic.live ? "聞いています…" : ""}</div>`;
+        return `<div class="label">あなたの番：自由に返してみましょう</div>
+          <p class="small muted free-lead">台本どおりでなくて大丈夫。会話の流れに合っていればクリアです。</p>
+          ${heard}${fr.err ? `<div class="err">${esc(fr.err)}</div>` : ""}
+          ${this.micButton("話す")}
+          <form class="free-form" data-free-form autocomplete="off"><input class="free-in" name="t" lang="zh-CN" placeholder="入力でもOK（中国語・ピンイン）" value="${esc(fr.draft)}" enterkeyhint="send"><button class="btn" type="submit">送る</button></form>
+          ${ideas}
+          <button class="link-btn" data-act="to-pick">台本の返しから選ぶ</button>`;
+      }
+      const r = fr.res, V = { good: ["通じます", "good"], ok: ["通じます。直すともっと自然", "mid"], retry: ["もう一歩", "low"] }[r.verdict] || ["もう一歩", "low"];
+      const sug = { good: 2, ok: 1, retry: 0 }[r.verdict];
+      const ex = r.closest >= 0 && t.r[r.closest] ? t.r[r.closest] : null;
+      return `<div class="free-res">
+          <div class="verdict ${V[1]}">${V[0]}</div>
+          <div class="you"><div class="zh" lang="zh-CN">${esc(r.said.zh)}</div>${r.said.py ? `<div class="py">${esc(r.said.py)}</div>` : ""}${r.said.ja ? `<div class="small">${esc(r.said.ja)}</div>` : ""}</div>
+          ${r.comment ? `<p class="comment">${esc(r.comment)}</p>` : ""}
+          ${r.better ? `<div class="better"><div class="eyebrow">こう言うともっと自然</div><div class="zh" lang="zh-CN">${esc(r.better.zh)}</div>${r.better.py ? `<div class="py">${esc(r.better.py)}</div>` : ""}${r.better.ja ? `<div class="small">${esc(r.better.ja)}</div>` : ""}<div class="row">${playBtn(r.better.zh, "聞く")}</div></div>` : ""}
+          <details class="ideas"><summary>台本の返しの例</summary><ul class="ex-list">${t.r.map((x) => `<li${x === ex ? ' class="near"' : ""}><div class="zh" lang="zh-CN">${highlight(x[0], t.k)}</div><div class="py">${esc(x[1])}</div><div class="small">${esc(x[2])}</div>${playBtn(x[0], "聞く")}</li>`).join("")}</ul></details>
+        </div>
+        <button class="link-btn" data-act="fretry">${I.mic}言い直す</button>
+        <div class="label">自分で言えましたか？</div>
+        <div class="grades">
+          <button class="btn g0 ${sug === 0 ? "suggest" : ""}" data-act="fgrade" data-g="0">言えなかった</button>
+          <button class="btn g1 ${sug === 1 ? "suggest" : ""}" data-act="fgrade" data-g="1">あやしい</button>
+          <button class="btn g2 ${sug === 2 ? "suggest" : ""}" data-act="fgrade" data-g="2">言えた</button>
+        </div>`;
+    },
+    freeMic() {
+      if (Mic.live) { Mic.stop(); return; }
+      this.micMsg = ""; this.said = "";
+      Mic.start(({ text, ended, reason }) => {
+        this.said = text;
+        if (ended) { if (text) return this.judgeFree(text, true); this.micMsg = micError(reason); this.render(); }
+        else { const h = document.getElementById("heard"); if (h) h.innerHTML = text ? `聞き取り：<b lang="zh-CN">${esc(text)}</b>` : "聞いています…"; }
+      });
+      this.render();
+    },
+    async judgeFree(text, spoken) {
+      text = String(text || "").trim();
+      if (!text || this.fr.busy || !AI.sample) return;
+      const t = this.run[this.i], s = this.s, turnAt = this.i;
+      this.fr = { draft: text, text, busy: true, res: null, err: "" }; this.render();
+      const ctx = this.log.slice(-6).map((x) => `${x.who === "p" ? "相手" : "学習者"}：${x.line[0]}`).join("\n");
+      const prompt = [
+        "あなたは中国語会話の先生です。日本人学習者（HSK2〜3級、目標はHSK4級の範囲で夜の場面の世間話をすらすら話すこと）のロールプレイの返しを判定します。",
+        `場面：${s.title}（${s.where}）。相手：${s.partner}。`,
+        "ここまでの会話：\n" + ctx,
+        `学習者の返し${spoken ? "（音声認識の結果。同音の誤変換や句読点の抜けは、学習者の誤りとして扱わない）" : "（入力。ピンインや日本語のこともある）"}：${text}`,
+        "台本の返しの例（参考。これと同じでなくてよい）：\n" + t.r.map((r, n) => `${n}. ${r[0]}（${r[2]}）`).join("\n"),
+        "判定のしかた：",
+        "- 模範解答と一致しているかではなく、相手のセリフへの返しとして意味が通じ、会話の流れに合っているかで判定する。",
+        '- verdict は "good"（通じて、流れにも合う。小さな不自然さは許す）、"ok"（通じるが、語の選び方や文法に直したい点がある）、"retry"（意味が通じない、流れに合わない、日本語だけ等）。',
+        "- said は学習者の言いたかった文。音声認識の誤変換は直してよいが、学習者の文法の誤りは直さずそのまま。ピンインや日本語で書かれていたら、言いたかった中国語の文にする。",
+        "- better は、学習者の言いたいことを生かした、より自然な言い方（HSK4級までの語、話し言葉、1〜2文）。すでに十分自然なら null。",
+        "- comment は日本語で1〜2文。よかった点か、直すと良い点を具体的に。穏やかに。大げさにほめたり、あおったりしない。",
+        "- closest は、学習者の返しに意味がいちばん近い台本の例の番号。どれとも違えば -1。",
+        "出力は次の形のJSONだけ：",
+        '{"verdict":"good","said":{"zh":"","py":"声調記号付きピンイン","ja":"日本語訳"},"comment":"","better":null または {"zh":"","py":"","ja":""},"closest":0}'
+      ].join("\n");
+      try {
+        const res = await AI.sample.json([{ role: "user", content: prompt }], { cache: false });
+        if (this.i !== turnAt || this.phase !== "free") return;
+        if (!res || !res.said || !res.said.zh) throw { code: "invalid_json" };
+        res.closest = Number.isInteger(res.closest) ? res.closest : -1;
+        if (res.better && !res.better.zh) res.better = null;
+        this.fr = { draft: text, text, busy: false, res, err: "" };
+        if (res.better) play(res.better.zh);
+      } catch (e) {
+        if (this.i !== turnAt) return;
+        const code = e && e.code;
+        this.fr = { draft: text, text, busy: false, res: null, err: code === "rate_limited" ? "混み合っています。少し待ってからもう一度送ってください。" : code === "not_granted" ? "Claudeへの問い合わせが許可されていません。台本の返しから選んで練習できます。" : "判定を受け取れませんでした。もう一度送ってください。" };
+        if (code === "not_granted") AI.sample = null;
+      }
       this.render();
     },
     endHtml() {
@@ -954,7 +1060,7 @@
       const seg = (key, opts) => `<span class="c seg">${opts.map(([v, l]) => `<button data-act="set" data-k="${key}" data-v="${v}" aria-pressed="${String(settings[key]) === String(v)}">${l}</button>`).join("")}</span>`;
       view.innerHTML = `<h1 class="page-h">設定</h1>
         <div class="prefs">
-          <div class="pref"><span>話す練習のしかた</span><span class="d">日本語を見て自分で中国語にするか、中国語を見て読むか。</span>${seg("style", [["challenge", "日本語→中国語"], ["read", "中国語を読む"]])}</div>
+          <div class="pref"><span>話す練習のしかた</span><span class="d">日本語を見て中国語にする／台本にとらわれず自由に返してAIが流れで判定する（Claudeのページで開いたとき）／中国語を見て読む。</span>${seg("style", [["challenge", "日本語→中国語"], ["free", "自由に返す"], ["read", "中国語を読む"]])}</div>
           <div class="pref"><span>相手のセリフの文字</span><span class="d">「聞いてから」にすると、音声が終わるまで文字を隠します。</span>${seg("subs", [["show", "すぐ表示"], ["after", "聞いてから"]])}</div>
           <div class="pref"><span>ピンイン</span><span class="d">オフにすると、漢字と音だけで練習できます。</span>${seg("pinyin", [["true", "表示"], ["false", "隠す"]])}</div>
           <div class="pref"><span>相手のセリフの訳</span><span class="d">隠していても、吹き出しの「訳」でいつでも見られます。</span>${seg("ja", [["true", "表示"], ["false", "隠す"]])}</div>
