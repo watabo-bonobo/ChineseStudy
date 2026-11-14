@@ -21,7 +21,7 @@
     set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
   };
   const settings = Object.assign({ style: "free", pinyin: true, subs: "show", ja: false, rate: 1 }, store.get("settings", {}));
-  if (!settings.v) { if (settings.style === "challenge") settings.style = "free"; settings.v = 2; } // free answers (AI judged) became the default
+  if (!settings.v) { if (settings.style !== "read") settings.style = "free"; settings.v = 2; } // free answers (AI judged) became the default
   const saveSettings = () => store.set("settings", settings);
 
   /* =============== helpers =============== */
@@ -490,7 +490,12 @@
       view.innerHTML = `${this.header(done ? "おわり" : this.stepText(), done ? 1 : this.i / this.run.length)}
         <div class="log">${this.log.map((x) => this.bubble(x)).join("")}</div>
         ${done ? this.endHtml() : `<div class="tray">${this.trayHtml()}</div>`}`;
-      requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }));
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: document.body.scrollHeight });
+        // on small phones keep the start of the newest line visible below the sticky header
+        const last = view.querySelector(".log .msg:last-child"), head = view.querySelector(".focus-head");
+        if (last && head && !done) { const gap = last.getBoundingClientRect().top - head.getBoundingClientRect().bottom - 12; if (gap < 0) window.scrollBy({ top: gap }); }
+      });
     },
     micButton(label) {
       return Mic.available() ? `<button class="btn wide mic ${Mic.live ? "live" : ""}" data-act="mic">${I.mic}${Mic.live ? "話し終えたらタップ" : label}</button>` : "";
@@ -499,7 +504,7 @@
       const t = this.run[this.i];
       if (this.phase === "choose") {
         return `<div class="label">あなたの番：どう返しますか？</div>
-          <div class="options">${t.r.map((r, n) => settings.style === "challenge"
+          <div class="options">${t.r.map((r, n) => settings.style !== "read"
             ? `<button class="option" data-act="pick" data-n="${n}">${esc(r[2])}</button>`
             : `<button class="option" data-act="pick" data-n="${n}"><span class="zh" lang="zh-CN">${esc(r[0])}</span>${settings.pinyin ? `<span class="py">${esc(r[1])}</span>` : ""}<span class="small muted">${esc(r[2])}</span></button>`).join("")}</div>
           ${AI.sample ? `<button class="link-btn" data-act="to-free">${I.mic}台本にとらわれず、自由に返す（AIが判定）</button>` : ""}`;
@@ -535,7 +540,7 @@
       const t = this.run[this.i];
       if (a === "unhide") { const x = this.log[this.log.length - 1]; if (x) x.hide = false; return this.render(); }
       if (a === "toggle") { const b = el.closest(".msg").querySelector(el.getAttribute("data-t") === "py" ? ".py" : ".ja"); if (b) b.hidden = !b.hidden; const n = el.closest(".msg").querySelector(".note"); if (n && el.getAttribute("data-t") === "ja") n.hidden = b.hidden; return; }
-      if (a === "pick") { this.pickI = +el.getAttribute("data-n"); this.phase = settings.style === "challenge" ? "say" : "reveal"; if (this.phase === "reveal") play(t.r[this.pickI][0]); return this.render(); }
+      if (a === "pick") { this.pickI = +el.getAttribute("data-n"); this.phase = settings.style !== "read" ? "say" : "reveal"; if (this.phase === "reveal") play(t.r[this.pickI][0]); return this.render(); }
       if (a === "reveal") { if (Mic.live) Mic.stop(); this.phase = "reveal"; play(t.r[this.pickI][0]); return this.render(); }
       if (a === "to-free") { this.phase = "free"; return this.render(); }
       if (a === "to-pick") { if (Mic.live) Mic.stop(); this.phase = "choose"; this.fr = { draft: "", busy: false, res: null, err: "" }; return this.render(); }

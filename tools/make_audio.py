@@ -233,7 +233,7 @@ if a.bundle:
     print(f"{len(groups)} ファイル / {len(index)} 文 / {sizes / 1e6:.1f} MB")
     if missing:
         print(f"音声がない文 {len(missing)} 件（先に生成してください）:", *missing[:10], sep="\n  ")
-    reps = [json.load(open(os.path.join(W, f), encoding="utf8")) for f in sorted(os.listdir(W)) if f.startswith("asr_") and f.endswith(".json")]
+    reps = [json.load(open(os.path.join(W, f), encoding="utf8")) for f in sorted(os.listdir(W)) if f.startswith("asr_") and f.endswith(".json") and f != "asr_report.json"]
     if reps:
         bad = sorted([x for r in reps for x in r["bad"]], reverse=True)
         n = sum(r["n"] for r in reps); e = sum(r["err"] for r in reps); c = sum(r["chars"] for r in reps)
