@@ -26,6 +26,7 @@ ap.add_argument("--models", required=True)
 ap.add_argument("--engine", default="zipvoice", choices=["zipvoice", "kokoro"])
 ap.add_argument("--zv-voices", default="p=k102,me=k25,word=k25", help="ZipVoice: role=voice name in tools/voices/voices.json")
 ap.add_argument("--zv-steps", type=int, default=8)
+ap.add_argument("--zv-script-tones", action="store_true", help="ZipVoice: use the script's tones as written (default: pypinyin's tones, which is how the model was trained, whenever the syllable itself agrees)")
 ap.add_argument("--zv-gs", type=float, default=3.0, help="ZipVoice guidance scale")
 ap.add_argument("--zv-word-tempo", type=float, default=0.85, help="ZipVoice: stretch single words (said slower and clearer); one-character words get x0.9 more")
 ap.add_argument("--roles", default="", help="generate only these roles, e.g. me,word")
@@ -120,6 +121,29 @@ def kokoro_phones(sylls):
 
 # ZipVoice tokens: initial + "0", final + tone (5 = neutral), spelling-based like pypinyin(strict=False)
 INITS = ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r", "z", "c", "s", "y", "w"]
+try:
+    from pypinyin import lazy_pinyin, Style
+except ImportError:
+    lazy_pinyin = None
+
+def zv_align(chars, sylls):
+    """ZipVoice was trained on pypinyin labels, which rarely mark neutral tones (先生 xian1 sheng1, 试试 shi4 shi4).
+    Feeding the script's neutral tones made it slur those syllables, so keep the script's syllable (that fixes
+    polyphones) but take pypinyin's tone wherever both agree on the syllable itself."""
+    if lazy_pinyin is None or a.zv_script_tones:
+        return sylls
+    pp = lazy_pinyin(chars, style=Style.TONE3, neutral_tone_with_five=True)
+    if len(pp) != len(sylls):
+        return sylls
+    out = []
+    for (b, t), q in zip(sylls, pp):
+        qb, qt = (q[:-1], int(q[-1])) if q[-1:].isdigit() else (q, 5)
+        if b == "R":
+            out.append(("er", qt) if qb == "er" else (b, t))
+        else:
+            out.append((b, qt) if qb == b else (b, t))
+    return out
+
 def zv_tokens(sylls):
     out = []
     for b, t in sylls:
@@ -154,10 +178,13 @@ for ln in lines + [{"zh": v["text"], "py": v["py"]} for v in VOICES.values()]:
     if n_han != n_syl:
         problems.append(f"{ln['zh']}  (漢字{n_han}字 / ピンイン{n_syl}音節: {ln['py']})"); continue
     k = 0
+    ln["_zv"], ln["_zv_script"] = [], []
     for c in cl:
         part = sylls[k:k + len(c)]; k += len(c)
+        ln["_zv"].append(zv_tokens(zv_align(c, part)))
+        ln["_zv_script"].append(zv_tokens(part))
         if len(c) > 1 or c not in zlex or not zv_tokens(part).endswith("5"):
-            zlex[c] = zv_tokens(part)
+            zlex[c] = zv_tokens(zv_align(c, part))
         pron = kokoro_phones(sandhi(part))
         if c in lex and lex[c] != pron:
             if len(c) > 1:
@@ -170,7 +197,8 @@ if problems:
     sys.exit(1)
 
 if a.dry_run:
-    print(f"ピンインOK: {len(lines)} 文"); sys.exit(0)
+    nd = sum(1 for ln in lines if ln["_zv"] != ln["_zv_script"])
+    print(f"ピンインOK: {len(lines)} 文（ZipVoice で台本と違う声調を使う文 {nd}）"); sys.exit(0)
 
 W = a.work or os.path.join("work", a.engine)
 MP3 = os.path.join(W, "mp3")
@@ -276,6 +304,17 @@ if a.check:
 han = lambda s: re.sub(r"[^\u3400-\u9fff]", "", s)
 NORM = str.maketrans({"他": "她", "它": "她", "哪": "那", "呐": "呢", "啦": "了", "嘛": "吗", "的": "得", "地": "得", "在": "再", "做": "作"})
 redo = set(l.strip() for l in open(a.redo, encoding="utf8")) if a.redo else set()
+# ZipVoice: remember which tokens each mp3 was made from, so a pronunciation change re-renders exactly the affected lines
+SIGF = os.path.join(W, "tokens.json")
+SIGS = json.load(open(SIGF, encoding="utf8")) if os.path.exists(SIGF) else {}
+sig = lambda ln: " | ".join(ln.get("_zv", [])) if a.engine == "zipvoice" else ""
+if a.engine == "zipvoice":
+    for ln in lines:   # mp3s made before this record existed used the script's tones as written
+        if keyof(ln["zh"]) not in SIGS and os.path.exists(os.path.join(MP3, keyof(ln["zh"]) + ".mp3")):
+            SIGS[keyof(ln["zh"])] = " | ".join(ln.get("_zv_script", []))
+def save_sigs():
+    if a.engine == "zipvoice" and n_sh == 1:
+        json.dump(SIGS, open(SIGF, "w", encoding="utf8"), ensure_ascii=False)
 rep = {"n": 0, "err": 0, "chars": 0, "bad": []}
 made = 0
 for i, ln in enumerate(lines):
@@ -285,7 +324,7 @@ for i, ln in enumerate(lines):
         continue
     zh = ln["zh"]
     mp3 = os.path.join(MP3, keyof(zh) + ".mp3")
-    if os.path.exists(mp3) and zh not in redo:
+    if os.path.exists(mp3) and zh not in redo and SIGS.get(keyof(zh), sig(ln)) == sig(ln):
         continue
     text = re.sub(r"[《》“”]", "", zh).replace("……", "，").replace("…", "，")
     samples, srate = synth(text, ln.get("role"))
@@ -297,6 +336,7 @@ for i, ln in enumerate(lines):
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", wav, "-af", af,
                     "-ac", "1", "-ar", "24000", "-codec:a", "libmp3lame", "-b:a", "48k", "-write_xing", "0", "-id3v2_version", "0", mp3], check=True)
     made += 1
+    SIGS[keyof(zh)] = sig(ln)
     if rec:
         s = rec.create_stream(); s.accept_waveform(srate, samples); rec.decode_stream(s)
         ref, hyp = han(zh).translate(NORM), han(s.result.text).translate(NORM)
@@ -308,6 +348,8 @@ for i, ln in enumerate(lines):
     if made % 50 == 0:
         print(f"[{k_sh}/{n_sh}] {made} 件", flush=True)
         if rec: json.dump(rep, open(os.path.join(W, f"asr_{k_sh}.json"), "w", encoding="utf8"), ensure_ascii=False)
+        save_sigs()
 if rec:
     json.dump(rep, open(os.path.join(W, f"asr_{k_sh}.json"), "w", encoding="utf8"), ensure_ascii=False)
+save_sigs()
 print(f"[{k_sh}/{n_sh}] 完了: {made} 件を作成")
