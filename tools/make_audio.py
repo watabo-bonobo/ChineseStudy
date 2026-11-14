@@ -24,8 +24,11 @@ VOICE = {"p": 102, "me": 25, "word": 25}   # Kokoro: partner male voice, learner
 ap = argparse.ArgumentParser()
 ap.add_argument("--models", required=True)
 ap.add_argument("--engine", default="zipvoice", choices=["zipvoice", "kokoro"])
-ap.add_argument("--zv-voices", default="p=man,me=k25,word=k25", help="ZipVoice: role=voice name in tools/voices/voices.json")
+ap.add_argument("--zv-voices", default="p=k102,me=k25,word=k25", help="ZipVoice: role=voice name in tools/voices/voices.json")
 ap.add_argument("--zv-steps", type=int, default=8)
+ap.add_argument("--zv-gs", type=float, default=3.0, help="ZipVoice guidance scale")
+ap.add_argument("--zv-word-tempo", type=float, default=0.85, help="ZipVoice: stretch single words (said slower and clearer); one-character words get x0.9 more")
+ap.add_argument("--roles", default="", help="generate only these roles, e.g. me,word")
 ap.add_argument("--zv-int8", action="store_true", help="ZipVoice: faster int8 decoder")
 ap.add_argument("--lines", default="work/lines.json")
 ap.add_argument("--out", default="audio")
@@ -227,7 +230,7 @@ if a.engine == "zipvoice":
             zipvoice=sherpa_onnx.OfflineTtsZipvoiceModelConfig(
                 tokens=os.path.join(ZV, "tokens.txt"), encoder=os.path.join(ZV, "text_encoder.onnx"),
                 decoder=os.path.join(ZV, "fm_decoder_int8.onnx" if a.zv_int8 else "fm_decoder.onnx"),
-                vocoder=os.path.join(ZV, "vocos_24khz.onnx"), lexicon=ZLEX, guidance_scale=3.0),
+                vocoder=os.path.join(ZV, "vocos_24khz.onnx"), lexicon=ZLEX, guidance_scale=a.zv_gs),
             num_threads=threads)))
     role_voice = dict(x.split("=") for x in a.zv_voices.split(","))
     prompts = {}
@@ -237,6 +240,7 @@ if a.engine == "zipvoice":
         prompts[name] = (v["text"], (x.mean(1) if x.ndim > 1 else x).tolist(), sr)
     def synth(text, role):
         pt, px, psr = prompts[role_voice.get(role, role_voice["me"])]
+        # (slowing ZipVoice itself down makes it leak the prompt into short words, so words are stretched afterwards)
         au = zv.generate(text, pt, px, psr, 1.0, a.zv_steps)
         x = np.array(au.samples, dtype=np.float32)
         x = x / max(1e-6, float(np.sqrt((x ** 2).mean()))) * 0.08   # same loudness for every line
@@ -277,6 +281,8 @@ made = 0
 for i, ln in enumerate(lines):
     if i % n_sh != k_sh:
         continue
+    if a.roles and ln.get("role") not in a.roles.split(","):
+        continue
     zh = ln["zh"]
     mp3 = os.path.join(MP3, keyof(zh) + ".mp3")
     if os.path.exists(mp3) and zh not in redo:
@@ -285,7 +291,10 @@ for i, ln in enumerate(lines):
     samples, srate = synth(text, ln.get("role"))
     wav = os.path.join(W, f"tmp{k_sh}.wav")
     sf.write(wav, samples, samplerate=srate, subtype="PCM_16")
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", wav, "-af", "silenceremove=start_periods=1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_threshold=-50dB,areverse,adelay=60",
+    af = "silenceremove=start_periods=1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_threshold=-50dB,areverse,adelay=60"
+    if a.engine == "zipvoice" and ln.get("role") == "word":
+        af += ",atempo=%.3f" % (a.zv_word_tempo * (0.9 if len(HAN.findall(text)) == 1 else 1.0))
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", wav, "-af", af,
                     "-ac", "1", "-ar", "24000", "-codec:a", "libmp3lame", "-b:a", "48k", "-write_xing", "0", "-id3v2_version", "0", mp3], check=True)
     made += 1
     if rec:

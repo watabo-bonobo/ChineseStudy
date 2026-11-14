@@ -25,6 +25,8 @@
 
   /* =============== helpers =============== */
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // Japanese explanation that quotes Chinese in 「」: show the quoted Chinese with simplified-Chinese glyphs
+  const jaHtml = (s) => esc(s).replace(/「([^「」ぁ-ゖァ-ヺー]*[\u3400-\u9fff][^「」ぁ-ゖァ-ヺー]*)」/g, '「<span lang="zh-CN">$1</span>」');
   const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
   const isLine = (x) => Array.isArray(x) && typeof x[0] === "string";
@@ -341,7 +343,7 @@
     prefetch([wordAudioKey(wd.w)].concat((wd.ex || []).map((e) => e[0])));
     const exs = (wd.ex || []).slice(0, 4);
     sheet(`<div class="ws-head"><span class="kind">${esc(kindShort(wd.kind))}${wd.hsk ? ` ・ HSK${wd.hsk}` : ""}</span>
-      <div class="ws-w" lang="zh-CN">${esc(wd.w)}</div><div class="ws-py">${esc(wd.py)}</div><div class="ws-ja">${esc(wd.ja)}</div>
+      <div class="ws-w" lang="zh-CN">${esc(wd.w)}</div><div class="ws-py">${esc(wd.py)}</div><div class="ws-ja">${jaHtml(wd.ja)}</div>
       <div class="row">${playBtn(wordAudioKey(wd.w), "単語を聞く")}<span class="tier t${tier("w:" + wd.w)}">${TIER_NAME[tier("w:" + wd.w)]}</span></div></div>
       ${exs.length ? `<div class="eyebrow">会話の中では</div><ul class="exs">${exs.map((e) => `<li><div class="zh" lang="zh-CN">${highlight(e[0], [wd.w])}</div><div class="py">${esc(e[1])}</div><div class="ja">${esc(e[2])}</div>${playBtn(e[0])}</li>`).join("")}</ul>` : ""}`);
   }
@@ -511,7 +513,7 @@
         </div>
         ${sc ? `<div class="score ${sc.pct >= 85 ? "good" : sc.pct >= 60 ? "mid" : "low"}">一致 ${sc.pct}%${sc.pct >= 85 ? " ・ 通じます" : sc.pct >= 60 ? " ・ 赤い字をもう一度" : " ・ お手本を聞いてもう一度"}</div>` : ""}
         ${heard}
-        ${ks.length ? `<div class="points"><span class="eyebrow">この文のポイント</span>${ks.map((k) => `<button class="kchip" data-kw="${esc(k[0])}"><span lang="zh-CN">${esc(k[0])}</span> ${esc(k[2])}</button>`).join("")}</div>` : ""}
+        ${ks.length ? `<div class="points"><span class="eyebrow">この文のポイント</span>${ks.map((k) => `<button class="kchip" data-kw="${esc(k[0])}"><span lang="zh-CN">${esc(k[0])}</span> ${jaHtml(k[2])}</button>`).join("")}</div>` : ""}
         <div class="label">自分で言えましたか？</div>
         <div class="grades">
           <button class="btn g0" data-act="grade" data-g="0">言えなかった</button>
@@ -560,7 +562,7 @@
         <h2>おつかれさまでした</h2>
         <p class="muted">${this.results.length}文のうち、言えたのは ${ok}文。言えなかった・あやしかった文は、間をあけて復習に出てきます。</p>
         <ul class="plist">${this.results.map((x) => `<li><span class="gdot g${x.g}" aria-label="${["言えなかった", "あやしい", "言えた"][x.g]}"></span><span class="zh" lang="zh-CN">${highlight(x.line[0], x.k)}</span><span class="ja">${esc(x.line[2])}</span><span class="acts">${playBtn(x.line[0], "聞く", "icon-btn")}</span></li>`).join("")}</ul>
-        ${ks.length ? `<div class="eyebrow">この会話に出てきた単語・つなぎ言葉</div><div class="kchips">${ks.map((k) => `<button class="kchip" data-kw="${esc(k[0])}"><span lang="zh-CN">${esc(k[0])}</span> ${esc(k[2])}</button>`).join("")}</div>` : ""}
+        ${ks.length ? `<div class="eyebrow">この会話に出てきた単語・つなぎ言葉</div><div class="kchips">${ks.map((k) => `<button class="kchip" data-kw="${esc(k[0])}"><span lang="zh-CN">${esc(k[0])}</span> ${jaHtml(k[2])}</button>`).join("")}</div>` : ""}
         <div class="stack">
           <button class="btn primary" data-act="again">もう一度（流れが変わります）</button>
           <a class="btn" href="#ai" data-ai-scene="${esc(this.s.id)}">AIとこの場面の続きを話す</a>
@@ -586,7 +588,7 @@
           <div class="big-play"><button class="play-xl" data-play="${esc(t.p[0])}" aria-label="もう一度聞く">${I.play}</button>
             <button class="chip" data-play="${esc(t.p[0])}" data-slow>${I.slow}ゆっくり</button></div>
           <div class="label center">相手は何と言った？</div>
-          <div class="options">${this.choices.map((c, n) => `<button class="option ${ans != null ? (c.ok ? "right" : n === ans ? "wrong" : "") : ""}" data-act="answer" data-n="${n}" ${ans != null ? "disabled" : ""}>${esc(c.ja)}</button>`).join("")}</div>
+          <div class="options">${this.choices.map((c, n) => `<button class="option ${ans != null ? (c.ok ? "right" : n === ans ? "wrong" : "") : ""}" data-act="answer" data-n="${n}" ${ans != null ? "disabled" : ""}>${jaHtml(c.ja)}</button>`).join("")}</div>
           ${ans != null ? `<div class="answer"><div class="zh" lang="zh-CN">${highlight(t.p[0], t.k)}</div><div class="py">${esc(t.p[1])}</div><div class="small">${esc(t.p[2])}</div></div>
             <button class="btn primary" data-act="lnext">${this.i + 1 < this.run.length ? "次へ" : "結果を見る"}</button>` : `<button class="btn ghost" data-act="answer" data-n="-1">わからない（答えを見る）</button>`}
         </section>`;
@@ -684,7 +686,7 @@
         const ans = this.ans;
         body = `<section class="listen"><div class="eyebrow center">聞き取り ・ ${esc(it.scene.title)}</div>
           <div class="big-play"><button class="play-xl" data-play="${esc(it.line[0])}" aria-label="聞く">${I.play}</button><button class="chip" data-play="${esc(it.line[0])}" data-slow>${I.slow}ゆっくり</button></div>
-          <div class="options">${this.choices.map((c, n) => `<button class="option ${ans != null ? (c.ok ? "right" : n === ans ? "wrong" : "") : ""}" data-act="lans" data-n="${n}" ${ans != null ? "disabled" : ""}>${esc(c.ja)}</button>`).join("")}</div>
+          <div class="options">${this.choices.map((c, n) => `<button class="option ${ans != null ? (c.ok ? "right" : n === ans ? "wrong" : "") : ""}" data-act="lans" data-n="${n}" ${ans != null ? "disabled" : ""}>${jaHtml(c.ja)}</button>`).join("")}</div>
           ${ans != null ? `<div class="answer"><div class="zh" lang="zh-CN">${highlight(it.line[0], it.k)}</div><div class="py">${esc(it.line[1])}</div></div><button class="btn primary" data-act="next">次へ</button>` : ""}</section>`;
       } else {
         const zh = it.kind === "w" ? it.w.w : it.line[0], py = it.kind === "w" ? it.w.py : it.line[1], ja = it.kind === "w" ? it.w.ja : it.line[2];
@@ -730,7 +732,7 @@
         <ul class="wlist">${list.map((w) => `<li><button data-kw="${esc(w.w)}">
           <span class="tdot t${tier("w:" + w.w)}" aria-label="${TIER_NAME[tier("w:" + w.w)]}"></span>
           <span class="w" lang="zh-CN">${esc(w.w)}</span><span class="py">${esc(w.py)}</span>
-          <span class="ja">${esc(w.ja)}</span><span class="kind">${esc(kindShort(w.kind))}${w.hsk ? " ・ " + w.hsk + "級" : ""}</span></button></li>`).join("")}</ul>`;
+          <span class="ja">${jaHtml(w.ja)}</span><span class="kind">${esc(kindShort(w.kind))}${w.hsk ? " ・ " + w.hsk + "級" : ""}</span></button></li>`).join("")}</ul>`;
     },
     act(a, el) {
       if (a === "fk") wFilter.kind = el.getAttribute("data-v");
@@ -769,12 +771,12 @@
       if (!this.items.length) { view.innerHTML = `${this.head()}<div class="empty">練習できる単語がありません。</div>`; return; }
       if (this.i >= this.items.length) {
         view.innerHTML = `${this.head()}<section class="end"><h2>${this.items.length}語のうち ${this.res.filter((g) => g === 2).length}語できました</h2>
-          <ul class="plist">${this.items.map((w, n) => `<li><span class="gdot g${this.res[n]}"></span><span class="zh" lang="zh-CN">${esc(w.w)}</span><span class="ja">${esc(w.ja)}</span><span class="acts">${playBtn(wordAudioKey(w.w), "聞く", "icon-btn")}</span></li>`).join("")}</ul>
+          <ul class="plist">${this.items.map((w, n) => `<li><span class="gdot g${this.res[n]}"></span><span class="zh" lang="zh-CN">${esc(w.w)}</span><span class="ja">${jaHtml(w.ja)}</span><span class="acts">${playBtn(wordAudioKey(w.w), "聞く", "icon-btn")}</span></li>`).join("")}</ul>
           <div class="stack"><a class="btn primary" href="#wq" data-act="restart">もう10語</a><a class="btn ghost" href="#words">単語一覧へ</a></div></section>`;
         return;
       }
       const w = this.items[this.i], ans = this.ans;
-      const after = (extra) => `<div class="answer"><div class="zh" lang="zh-CN">${esc(w.w)}　<span class="py">${esc(w.py)}</span></div><div class="small">${esc(w.ja)}</div>
+      const after = (extra) => `<div class="answer"><div class="zh" lang="zh-CN">${esc(w.w)}　<span class="py">${esc(w.py)}</span></div><div class="small">${jaHtml(w.ja)}</div>
           ${(w.ex || [])[0] ? `<div class="ex"><span lang="zh-CN">${highlight((this.ex || w.ex[0])[0], [w.w])}</span><br><span class="small muted">${esc((this.ex || w.ex[0])[2])}</span> ${playBtn((this.ex || w.ex[0])[0])}</div>` : ""}${extra || ""}</div>`;
       let body = "";
       if (this.type === "cloze") {
@@ -789,10 +791,10 @@
         body = `<div class="eyebrow">聞こえた語の意味は？</div>
           <div class="big-play"><button class="play-xl" data-play="${esc(src)}" aria-label="聞く">${I.play}</button></div>
           ${src !== wordAudioKey(w.w) ? `<div class="small muted center">文の中の「${esc(w.py)}」の意味を選んでください。</div>` : ""}
-          <div class="options">${this.choices.map((c, n) => `<button class="option ${ans != null ? (c === w ? "right" : n === ans ? "wrong" : "") : ""}" data-act="ans" data-n="${n}" ${ans != null ? "disabled" : ""}>${esc(c.ja)}</button>`).join("")}</div>
+          <div class="options">${this.choices.map((c, n) => `<button class="option ${ans != null ? (c === w ? "right" : n === ans ? "wrong" : "") : ""}" data-act="ans" data-n="${n}" ${ans != null ? "disabled" : ""}>${jaHtml(c.ja)}</button>`).join("")}</div>
           ${ans != null ? after() + `<button class="btn primary" data-act="next">次へ</button>` : ""}`;
       } else {
-        body = `<div class="eyebrow">中国語で言ってみましょう</div><div class="q-ja">${esc(w.ja)}</div>
+        body = `<div class="eyebrow">中国語で言ってみましょう</div><div class="q-ja">${jaHtml(w.ja)}</div>
           ${(w.ex || [])[0] ? `<div class="small muted">使う場面：${esc(w.ex[0][2])}</div>` : ""}
           ${this.shown ? after() + `<div class="grades"><button class="btn g0" data-act="g" data-g="0">言えなかった</button><button class="btn g1" data-act="g" data-g="1">あやしい</button><button class="btn g2" data-act="g" data-g="2">言えた</button></div>`
             : `<button class="btn primary" data-act="show">${I.eye}答えを見る</button>`}`;
